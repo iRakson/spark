@@ -135,6 +135,10 @@ private[ui] class ThriftServerSessionPage(parent: ThriftServerTab)
           <a>SQL Statistics</a>
         </h4>
       </span> ++
+        <div class="input-group">
+          Search: <input type="text" class="form-control" id="search"
+                         oninput="onSearchJDBCPage()"></input>
+        </div> ++
         <div class="aggregated-sqlsessionstat collapsible-table">
           {table.getOrElse("No statistics have been generated yet.")}
         </div>

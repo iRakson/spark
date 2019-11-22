@@ -202,6 +202,10 @@ private[ui] class ThriftServerPage(parent: ThriftServerTab) extends WebUIPage(""
         <a>Session Statistics ({numSessions})</a>
       </h4>
     </span> ++
+      <div class="input-group">
+        Search: <input type="text" class="form-control" id="search"
+                       oninput="onSearchJDBCPage()"></input>
+      </div> ++
       <div class="aggregated-sessionstat collapsible-table">
         {table.getOrElse("No statistics have been generated yet.")}
       </div>
