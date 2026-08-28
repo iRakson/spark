@@ -441,3 +441,27 @@ SELECT
 FROM aggr_time;
 
 SELECT percentile_approx(t, array(0.25, 0.5, 0.75)) FROM aggr_time;
+
+-- SPARK-57826: percentile_approx over nanosecond-precision timestamps (TIMESTAMP_NTZ(p) /
+-- TIMESTAMP_LTZ(p), p in [7, 9]). The result type mirrors the input's family and precision.
+-- Values are close to the epoch so the double summary used internally round-trips the
+-- sub-microsecond digits exactly (a double has only 53 bits of integer precision, shared between
+-- epochMicros and the sub-microsecond fraction, so timestamps far from the epoch may lose some
+-- of that fraction -- an accepted limitation of any double-backed approximate aggregate).
+SET spark.sql.timestampNanosTypes.enabled=true;
+
+CREATE OR REPLACE TEMPORARY VIEW aggr_nanos AS SELECT * FROM VALUES
+  ('1970-01-01 00:00:01.000000100' :: timestamp_ntz(9)),
+  ('1970-01-01 00:00:02.000000100' :: timestamp_ntz(9)),
+  ('1970-01-01 00:00:03.000000100' :: timestamp_ntz(9)),
+  ('1970-01-01 00:00:04.000000100' :: timestamp_ntz(9))
+AS aggr_nanos(t);
+
+SELECT typeof(percentile_approx(t, 0.5)), percentile_approx(t, 0.5) FROM aggr_nanos;
+SELECT percentile_approx(t, array(0.25, 0.5, 0.75)) FROM aggr_nanos;
+
+-- TIMESTAMP_LTZ(7) truncates the sub-microsecond digits to a multiple of 100ns. A fixed UTC
+-- session zone keeps the rendered LTZ value independent of the environment running the test.
+SET spark.sql.session.timeZone=UTC;
+SELECT typeof(percentile_approx(t, 0.5)), percentile_approx(t, 0.5)
+FROM VALUES ('1970-01-01 00:00:01.123456789' :: timestamp_ltz(7)) AS t(t);

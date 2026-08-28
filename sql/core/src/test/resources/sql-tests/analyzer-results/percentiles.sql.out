@@ -1230,3 +1230,67 @@ Aggregate [percentile_approx(t#x, cast(array(0.25, cast(0.5 as decimal(2,2)), 0.
          +- Project [t#x]
             +- SubqueryAlias aggr_time
                +- LocalRelation [t#x]
+
+
+-- !query
+SET spark.sql.timestampNanosTypes.enabled=true
+-- !query analysis
+SetCommand (spark.sql.timestampNanosTypes.enabled,Some(true))
+
+
+-- !query
+CREATE OR REPLACE TEMPORARY VIEW aggr_nanos AS SELECT * FROM VALUES
+  ('1970-01-01 00:00:01.000000100' :: timestamp_ntz(9)),
+  ('1970-01-01 00:00:02.000000100' :: timestamp_ntz(9)),
+  ('1970-01-01 00:00:03.000000100' :: timestamp_ntz(9)),
+  ('1970-01-01 00:00:04.000000100' :: timestamp_ntz(9))
+AS aggr_nanos(t)
+-- !query analysis
+CreateViewCommand `aggr_nanos`, SELECT * FROM VALUES
+  ('1970-01-01 00:00:01.000000100' :: timestamp_ntz(9)),
+  ('1970-01-01 00:00:02.000000100' :: timestamp_ntz(9)),
+  ('1970-01-01 00:00:03.000000100' :: timestamp_ntz(9)),
+  ('1970-01-01 00:00:04.000000100' :: timestamp_ntz(9))
+AS aggr_nanos(t), false, true, LocalTempView, UNSUPPORTED, true
+   +- Project [t#x]
+      +- SubqueryAlias aggr_nanos
+         +- LocalRelation [t#x]
+
+
+-- !query
+SELECT typeof(percentile_approx(t, 0.5)), percentile_approx(t, 0.5) FROM aggr_nanos
+-- !query analysis
+Aggregate [typeof(percentile_approx(t#x, cast(0.5 as double), 10000, 0, 0)) AS typeof(percentile_approx(t, 0.5, 10000))#x, percentile_approx(t#x, cast(0.5 as double), 10000, 0, 0) AS percentile_approx(t, 0.5, 10000)#x]
++- SubqueryAlias aggr_nanos
+   +- View (`aggr_nanos`, [t#x])
+      +- Project [cast(t#x as timestamp_ntz(9)) AS t#x]
+         +- Project [t#x]
+            +- SubqueryAlias aggr_nanos
+               +- LocalRelation [t#x]
+
+
+-- !query
+SELECT percentile_approx(t, array(0.25, 0.5, 0.75)) FROM aggr_nanos
+-- !query analysis
+Aggregate [percentile_approx(t#x, cast(array(0.25, cast(0.5 as decimal(2,2)), 0.75) as array<double>), 10000, 0, 0) AS percentile_approx(t, array(0.25, 0.5, 0.75), 10000)#x]
++- SubqueryAlias aggr_nanos
+   +- View (`aggr_nanos`, [t#x])
+      +- Project [cast(t#x as timestamp_ntz(9)) AS t#x]
+         +- Project [t#x]
+            +- SubqueryAlias aggr_nanos
+               +- LocalRelation [t#x]
+
+
+-- !query
+SET spark.sql.session.timeZone=UTC
+-- !query analysis
+SetCommand (spark.sql.session.timeZone,Some(UTC))
+
+
+-- !query
+SELECT typeof(percentile_approx(t, 0.5)), percentile_approx(t, 0.5)
+FROM VALUES ('1970-01-01 00:00:01.123456789' :: timestamp_ltz(7)) AS t(t)
+-- !query analysis
+Aggregate [typeof(percentile_approx(t#x, cast(0.5 as double), 10000, 0, 0)) AS typeof(percentile_approx(t, 0.5, 10000))#x, percentile_approx(t#x, cast(0.5 as double), 10000, 0, 0) AS percentile_approx(t, 0.5, 10000)#x]
++- SubqueryAlias t
+   +- LocalRelation [t#x]

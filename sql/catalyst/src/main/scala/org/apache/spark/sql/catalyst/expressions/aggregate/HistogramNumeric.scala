@@ -31,6 +31,7 @@ import org.apache.spark.sql.errors.QueryErrorsBase
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 import org.apache.spark.sql.util.NumericHistogram
+import org.apache.spark.unsafe.types.TimestampNanosVal
 
 /**
  * Computes an approximate histogram of a numerical column using a user-specified number of bins.
@@ -85,10 +86,10 @@ case class HistogramNumeric(
 
   override def inputTypes: Seq[AbstractDataType] = {
     // Support NumericType, DateType, TimestampType, TimestampNTZType, TimeType,
-    // YearMonthIntervalType, DayTimeIntervalType since their internal types are all numeric,
-    // and can be easily cast to double for processing.
+    // YearMonthIntervalType, DayTimeIntervalType, AnyTimestampNanoType since their internal
+    // types are all numeric, and can be easily cast to double for processing.
     Seq(TypeCollection(NumericType, DateType, TimestampType, TimestampNTZType,
-      YearMonthIntervalType, DayTimeIntervalType, AnyTimeType), IntegerType)
+      YearMonthIntervalType, DayTimeIntervalType, AnyTimeType, AnyTimestampNanoType), IntegerType)
   }
 
   override def checkInputDataTypes(): TypeCheckResult = {
@@ -134,6 +135,7 @@ case class HistogramNumeric(
       // Convert the value to a double value
       val doubleValue = value match {
         case d: Decimal => d.toDouble
+        case tn: TimestampNanosVal => ApproximatePercentile.timestampNanosToDouble(tn)
         case o => o.asInstanceOf[Number].doubleValue()
       }
       buffer.add(doubleValue)
@@ -172,6 +174,9 @@ case class HistogramNumeric(
             case _: DayTimeIntervalType | LongType | TimestampType | TimestampNTZType
                 | _: TimeType =>
               coord.x.toLong
+            case t: AnyTimestampNanoType =>
+              val precision = TimestampFamily.fractionalPrecision(t).get
+              ApproximatePercentile.doubleToTimestampNanos(coord.x, precision)
             case d: DecimalType =>
               val bigDecimal = BigDecimal
                 .decimal(coord.x, new java.math.MathContext(d.precision))

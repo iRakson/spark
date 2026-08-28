@@ -31,7 +31,9 @@ import org.apache.spark.sql.catalyst.expressions.aggregate.ApproximatePercentile
 import org.apache.spark.sql.catalyst.plans.logical.LocalRelation
 import org.apache.spark.sql.catalyst.util.{ArrayData, QuantileSummaries}
 import org.apache.spark.sql.catalyst.util.QuantileSummaries.Stats
-import org.apache.spark.sql.types.{ArrayType, Decimal, DecimalType, DoubleType, FloatType, IntegerType, IntegralType, LongType, TimeType}
+import org.apache.spark.sql.types.{ArrayType, Decimal, DecimalType, DoubleType, FloatType,
+  IntegerType, IntegralType, LongType, TimestampLTZNanosType, TimestampNTZNanosType, TimeType}
+import org.apache.spark.unsafe.types.TimestampNanosVal
 import org.apache.spark.util.SizeEstimator
 
 class ApproximatePercentileSuite extends SparkFunSuite {
@@ -150,6 +152,41 @@ class ApproximatePercentileSuite extends SparkFunSuite {
     val result = agg.eval(buffer)
     assert(result.isInstanceOf[Long])
     assert(Math.abs(result.asInstanceOf[Long] - 500L) < 5L)
+  }
+
+  test("SPARK-57826: ApproximatePercentile supports nanosecond-precision timestamps") {
+    // The result type mirrors the input nanosecond timestamp type, preserving family and precision.
+    assert(new ApproximatePercentile(
+      BoundReference(0, TimestampNTZNanosType(9), nullable = false), Literal(0.5)).dataType ===
+      TimestampNTZNanosType(9))
+    assert(new ApproximatePercentile(
+      BoundReference(0, TimestampLTZNanosType(7), nullable = false), Literal(0.5)).dataType ===
+      TimestampLTZNanosType(7))
+
+    // update/merge/eval round-trips the TimestampNanosVal, preserving the sub-microsecond digits
+    // (encoded as epochMicros plus the nanosWithinMicro fraction of a microsecond).
+    val agg = new ApproximatePercentile(
+      BoundReference(0, TimestampNTZNanosType(9), nullable = false), Literal(0.5))
+    val buffer = agg.createAggregationBuffer()
+    (1L to 999L).foreach { n =>
+      agg.update(buffer, InternalRow(TimestampNanosVal.fromParts(0L, n.toShort)))
+    }
+    val result = agg.eval(buffer)
+    assert(result.isInstanceOf[TimestampNanosVal])
+    val tn = result.asInstanceOf[TimestampNanosVal]
+    assert(tn.epochMicros === 0L)
+    assert(Math.abs(tn.nanosWithinMicro - 500) < 5)
+  }
+
+  test("SPARK-57826: ApproximatePercentile truncates the nanosecond result to the input's " +
+    "precision") {
+    // TIMESTAMP_NTZ(7) truncates the sub-microsecond digits to a multiple of 100.
+    val agg = new ApproximatePercentile(
+      BoundReference(0, TimestampNTZNanosType(7), nullable = false), Literal(0.5))
+    val buffer = agg.createAggregationBuffer()
+    // percentile_approx over a single value returns exactly that stored value.
+    agg.update(buffer, InternalRow(TimestampNanosVal.fromParts(1000000L, 456.toShort)))
+    assert(agg.eval(buffer) === TimestampNanosVal.fromParts(1000000L, 400.toShort))
   }
 
   test("class ApproximatePercentile, low level interface, update, merge, eval...") {

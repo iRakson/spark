@@ -18,7 +18,7 @@
 package org.apache.spark.sql
 
 import java.sql.{Date, Timestamp}
-import java.time.{Duration, LocalDateTime, LocalTime, Period}
+import java.time.{Duration, Instant, LocalDateTime, LocalTime, Period}
 
 import org.apache.spark.SparkArithmeticException
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression,
@@ -32,7 +32,8 @@ import org.apache.spark.sql.execution.aggregate.ObjectHashAggregateExec
 import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.test.SharedSparkSession
-import org.apache.spark.sql.types.{ArrayType, DoubleType, TimeType}
+import org.apache.spark.sql.types.{ArrayType, DoubleType, TimestampLTZNanosType,
+  TimestampNTZNanosType, TimeType}
 import org.apache.spark.tags.SlowSQLTest
 
 /**
@@ -593,6 +594,53 @@ class ApproximatePercentileQuerySuite extends SharedSparkSession {
       checkAnswer(
         spark.sql(s"SELECT percentile_approx(c, array(0.2, 0.5, 0.8D)) FROM $table"),
         Row(Seq(LocalTime.of(1, 0), LocalTime.of(3, 0), LocalTime.of(4, 0))))
+    }
+  }
+
+  test("SPARK-57826: percentile_approx supports nanosecond-precision TIMESTAMP_NTZ") {
+    // The double summary used internally (epochMicros plus the nanosWithinMicro fraction of a
+    // microsecond) round-trips exactly only while epochMicros stays well inside a double's 53
+    // bits of integer precision; values close to the epoch stay comfortably inside that range, so
+    // this locks in exact sub-microsecond fidelity. (Timestamps many decades from the epoch trade
+    // some sub-microsecond precision for that same reason, the same way a percentile over huge
+    // BIGINT values loses low-order bits -- an accepted limitation of any double-backed summary.)
+    withTempView(table) {
+      spark.sql(
+        s"""SELECT * FROM VALUES
+           |  ('1970-01-01 00:00:01.000000100' :: timestamp_ntz(9)),
+           |  ('1970-01-01 00:00:02.000000100' :: timestamp_ntz(9)),
+           |  ('1970-01-01 00:00:03.000000100' :: timestamp_ntz(9)),
+           |  ('1970-01-01 00:00:04.000000100' :: timestamp_ntz(9)),
+           |  ('1970-01-01 00:00:05.000000100' :: timestamp_ntz(9)) AS tab(c)
+         """.stripMargin).createOrReplaceTempView(table)
+      val scalarDf = spark.sql(s"SELECT percentile_approx(c, 0.5) FROM $table")
+      // The result type mirrors the input nanosecond timestamp type (family and precision).
+      assert(scalarDf.schema.head.dataType === TimestampNTZNanosType(9))
+      checkAnswer(scalarDf, Row(LocalDateTime.parse("1970-01-01T00:00:03.000000100")))
+      checkAnswer(
+        spark.sql(s"SELECT percentile_approx(c, array(0.2, 0.5, 0.8D)) FROM $table"),
+        Row(Seq(
+          LocalDateTime.parse("1970-01-01T00:00:01.000000100"),
+          LocalDateTime.parse("1970-01-01T00:00:03.000000100"),
+          LocalDateTime.parse("1970-01-01T00:00:04.000000100"))))
+    }
+  }
+
+  test("SPARK-57826: percentile_approx over TIMESTAMP_LTZ nanoseconds preserves the family and " +
+    "truncates to the input's precision") {
+    // A fixed UTC session zone keeps the expected Instant independent of the local test
+    // environment; a near-epoch value keeps the double round-trip exact (see the NTZ test above).
+    withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> "UTC") {
+      withTempView(table) {
+        spark.sql(
+          s"""SELECT * FROM VALUES
+             |  ('1970-01-01 00:00:01.123456789' :: timestamp_ltz(7)) AS tab(c)
+           """.stripMargin).createOrReplaceTempView(table)
+        val scalarDf = spark.sql(s"SELECT percentile_approx(c, 0.5) FROM $table")
+        assert(scalarDf.schema.head.dataType === TimestampLTZNanosType(7))
+        // TIMESTAMP_LTZ(7) truncates the sub-microsecond digits to a multiple of 100ns.
+        checkAnswer(scalarDf, Row(Instant.parse("1970-01-01T00:00:01.123456700Z")))
+      }
     }
   }
 

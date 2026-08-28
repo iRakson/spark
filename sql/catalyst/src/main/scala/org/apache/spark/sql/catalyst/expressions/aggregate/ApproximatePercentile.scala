@@ -30,10 +30,12 @@ import org.apache.spark.sql.catalyst.expressions.Cast._
 import org.apache.spark.sql.catalyst.expressions.aggregate.ApproximatePercentile.PercentileDigest
 import org.apache.spark.sql.catalyst.trees.TernaryLike
 import org.apache.spark.sql.catalyst.types.PhysicalNumericType
-import org.apache.spark.sql.catalyst.util.{ArrayData, GenericArrayData}
+import org.apache.spark.sql.catalyst.util.{ArrayData, DateTimeUtils, GenericArrayData}
+import org.apache.spark.sql.catalyst.util.DateTimeConstants.NANOS_PER_MICROS
 import org.apache.spark.sql.catalyst.util.QuantileSummaries
 import org.apache.spark.sql.catalyst.util.QuantileSummaries.{defaultCompressThreshold, Stats}
 import org.apache.spark.sql.types._
+import org.apache.spark.unsafe.types.TimestampNanosVal
 import org.apache.spark.util.ArrayImplicits._
 
 /**
@@ -112,10 +114,11 @@ case class ApproximatePercentile(
   private lazy val accuracy: Long = accuracyNum.longValue
 
   override def inputTypes: Seq[AbstractDataType] = {
-    // Support NumericType, DateType, TimestampType, TimestampNTZType and TimeType since their
-    // internal types are all numeric, and can be easily cast to double for processing.
+    // Support NumericType, DateType, TimestampType, TimestampNTZType, TimeType and
+    // AnyTimestampNanoType since their internal types are all numeric, and can be easily cast
+    // to double for processing.
     Seq(TypeCollection(NumericType, DateType, TimestampType, TimestampNTZType,
-      YearMonthIntervalType, DayTimeIntervalType, AnyTimeType),
+      YearMonthIntervalType, DayTimeIntervalType, AnyTimeType, AnyTimestampNanoType),
       TypeCollection(DoubleType, ArrayType(DoubleType, containsNull = false)), IntegralType)
   }
 
@@ -195,6 +198,8 @@ case class ApproximatePercentile(
         case DateType | _: YearMonthIntervalType => value.asInstanceOf[Int].toDouble
         case TimestampType | TimestampNTZType | _: DayTimeIntervalType | _: TimeType =>
           value.asInstanceOf[Long].toDouble
+        case _: AnyTimestampNanoType =>
+          ApproximatePercentile.timestampNanosToDouble(value.asInstanceOf[TimestampNanosVal])
         case n: NumericType =>
           PhysicalNumericType.numeric(n)
             .toDouble(value.asInstanceOf[PhysicalNumericType#InternalType])
@@ -217,6 +222,9 @@ case class ApproximatePercentile(
       case DateType | _: YearMonthIntervalType => doubleResult.map(_.toInt)
       case TimestampType | TimestampNTZType | _: DayTimeIntervalType | _: TimeType =>
         doubleResult.map(_.toLong)
+      case t: AnyTimestampNanoType =>
+        val precision = TimestampFamily.fractionalPrecision(t).get
+        doubleResult.map(ApproximatePercentile.doubleToTimestampNanos(_, precision))
       case ByteType => doubleResult.map(_.toByte)
       case ShortType => doubleResult.map(_.toShort)
       case IntegerType => doubleResult.map(_.toInt)
@@ -277,6 +285,42 @@ object ApproximatePercentile {
   // Default accuracy of Percentile approximation. Larger value means better accuracy.
   // The default relative error can be deduced by defaultError = 1.0 / DEFAULT_PERCENTILE_ACCURACY
   val DEFAULT_PERCENTILE_ACCURACY: Int = 10000
+
+  /**
+   * Converts a nanosecond timestamp value into the double representation used by
+   * [[QuantileSummaries]], as `epochMicros` plus the `nanosWithinMicro` fraction of a
+   * microsecond. This keeps the same magnitude (and therefore the same rounding behavior) as the
+   * microsecond timestamp path instead of widening to epoch-nanoseconds, which would exceed the
+   * 53 bits of integer precision a double can represent exactly.
+   *
+   * A double has only 53 bits of exact integer precision total, shared between `epochMicros` and
+   * the sub-microsecond fraction; `epochMicros` alone already uses all of them for timestamps
+   * more than a few months from the epoch, so the fraction added here is best-effort and may
+   * round away for such values (same trade-off `Long.toDouble` already accepts for the plain
+   * microsecond path once `epochMicros` itself exceeds 2^53). This is acceptable because these
+   * aggregates are inherently approximate; exact aggregates (`MIN`/`MAX`/`mode`/etc.) never
+   * convert through a double and keep full nanosecond fidelity regardless of magnitude.
+   */
+  private[aggregate] def timestampNanosToDouble(value: TimestampNanosVal): Double = {
+    value.epochMicros.toDouble + value.nanosWithinMicro.toDouble / NANOS_PER_MICROS
+  }
+
+  /**
+   * Inverse of [[timestampNanosToDouble]], truncating the sub-microsecond digits to `precision`
+   * (in [7, 9]) so the result is valid for the target `TIMESTAMP_NTZ(precision)` /
+   * `TIMESTAMP_LTZ(precision)` type.
+   */
+  private[aggregate] def doubleToTimestampNanos(
+      value: Double, precision: Int): TimestampNanosVal = {
+    val epochMicros = Math.floor(value).toLong
+    // Clamp guards against fp rounding pushing the fractional part's rounded value up to
+    // NANOS_PER_MICROS (1000), which is out of the valid [0, 999] range for nanosWithinMicro.
+    val nanosWithinMicro = Math.min(
+      Math.round((value - epochMicros) * NANOS_PER_MICROS),
+      TimestampNanosVal.MAX_NANOS_WITHIN_MICRO).toInt
+    DateTimeUtils.truncateTimestampNanosToPrecision(
+      TimestampNanosVal.fromParts(epochMicros, nanosWithinMicro.toShort), precision)
+  }
 
   /**
    * PercentileDigest is a probabilistic data structure used for approximating percentiles

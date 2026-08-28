@@ -1219,3 +1219,57 @@ SELECT percentile_approx(t, array(0.25, 0.5, 0.75)) FROM aggr_time
 struct<percentile_approx(t, array(0.25, 0.5, 0.75), 10000):array<time(6)>>
 -- !query output
 [00:00:00,06:00:00,12:00:00]
+
+
+-- !query
+SET spark.sql.timestampNanosTypes.enabled=true
+-- !query schema
+struct<key:string,value:string>
+-- !query output
+spark.sql.timestampNanosTypes.enabled	true
+
+
+-- !query
+CREATE OR REPLACE TEMPORARY VIEW aggr_nanos AS SELECT * FROM VALUES
+  ('1970-01-01 00:00:01.000000100' :: timestamp_ntz(9)),
+  ('1970-01-01 00:00:02.000000100' :: timestamp_ntz(9)),
+  ('1970-01-01 00:00:03.000000100' :: timestamp_ntz(9)),
+  ('1970-01-01 00:00:04.000000100' :: timestamp_ntz(9))
+AS aggr_nanos(t)
+-- !query schema
+struct<>
+-- !query output
+
+
+
+-- !query
+SELECT typeof(percentile_approx(t, 0.5)), percentile_approx(t, 0.5) FROM aggr_nanos
+-- !query schema
+struct<typeof(percentile_approx(t, 0.5, 10000)):string,percentile_approx(t, 0.5, 10000):timestamp_ntz(9)>
+-- !query output
+timestamp_ntz(9)	1970-01-01 00:00:02.0000001
+
+
+-- !query
+SELECT percentile_approx(t, array(0.25, 0.5, 0.75)) FROM aggr_nanos
+-- !query schema
+struct<percentile_approx(t, array(0.25, 0.5, 0.75), 10000):array<timestamp_ntz(9)>>
+-- !query output
+[1970-01-01 00:00:01.0000001,1970-01-01 00:00:02.0000001,1970-01-01 00:00:03.0000001]
+
+
+-- !query
+SET spark.sql.session.timeZone=UTC
+-- !query schema
+struct<key:string,value:string>
+-- !query output
+spark.sql.session.timeZone	UTC
+
+
+-- !query
+SELECT typeof(percentile_approx(t, 0.5)), percentile_approx(t, 0.5)
+FROM VALUES ('1970-01-01 00:00:01.123456789' :: timestamp_ltz(7)) AS t(t)
+-- !query schema
+struct<typeof(percentile_approx(t, 0.5, 10000)):string,percentile_approx(t, 0.5, 10000):timestamp_ltz(7)>
+-- !query output
+timestamp_ltz(7)	1970-01-01 00:00:01.1234567

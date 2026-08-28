@@ -33,6 +33,7 @@ import org.apache.spark.sql.catalyst.util.GenericArrayData
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 import org.apache.spark.sql.util.NumericHistogram
+import org.apache.spark.unsafe.types.TimestampNanosVal
 
 class HistogramNumericSuite extends SparkFunSuite with SQLHelper {
 
@@ -214,6 +215,28 @@ class HistogramNumericSuite extends SparkFunSuite with SQLHelper {
       val result = agg.eval(buffer).asInstanceOf[GenericArrayData]
       assert(result.numElements() > 0)
       assert(result.getStruct(0, 2).get(0, TimeType()).isInstanceOf[Long])
+    }
+  }
+
+  test("SPARK-57826: HistogramNumeric supports nanosecond-precision timestamps") {
+    // With propagateInputType, the histogram's 'x' field preserves the input nanosecond timestamp
+    // type (family and precision), and the bin centers are returned as TimestampNanosVal.
+    withSQLConf(SQLConf.HISTOGRAM_NUMERIC_PROPAGATE_INPUT_TYPE.key -> "true") {
+      val agg = new HistogramNumeric(
+        BoundReference(0, TimestampNTZNanosType(9), nullable = true), Literal(5))
+      val xType = agg.dataType match {
+        case ArrayType(StructType(Array(
+            StructField("x", t, _, _), StructField("y", _, _, _))), _) => t
+      }
+      assert(xType === TimestampNTZNanosType(9))
+      val buffer = agg.createAggregationBuffer()
+      Seq(100L, 500L, 900L).foreach { n =>
+        agg.update(buffer, InternalRow(TimestampNanosVal.fromParts(0L, n.toShort)))
+      }
+      val result = agg.eval(buffer).asInstanceOf[GenericArrayData]
+      assert(result.numElements() > 0)
+      assert(result.getStruct(0, 2).get(0, TimestampNTZNanosType(9))
+        .isInstanceOf[TimestampNanosVal])
     }
   }
 
